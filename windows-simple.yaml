@@ -1,0 +1,204 @@
+# This blueprint is not meant to be an optimal production blueprint, but rather be a MVP/POC blueprint to showcase some of the capabilities in VCF Automation. To make it work there are some things that can not currently (9.0.2) be fetched dynamically that you need to input.
+# most of these values are under variables: , but you also need to edit the "vmi-" for your windows image in the content catalogue.
+# you also need to create a secret under "Administer" -> "Secrets" called ad-join-password
+
+# the image used can be created by simply creating a virtual machine, installing windows, installing vmware-tools, and then shutting the vm down.
+# then clone the VM to content catalogue, as an OVF file. It should be available in VCFA after this.
+
+formatVersion: 2
+outputs:
+  __deploymentOverview:
+    value: |-
+
+      ## Windows Server
+
+      Your Windows Server was deployed successfully. Below is a table of useful information
+
+      #### Virtual Machines
+      <table class="table">
+        <tr>
+          <th>Name</th>
+          <th>Hostname</th>
+          <th>Domain</th>
+          <th>Status</th>
+          <th>Power State</th>
+          <th>Zone</th>
+          <th>Internal Address</th>
+          <th>Public Address</th>
+          <th>Class</th>
+        </tr>
+        <tr>
+          <td><strong>{{resource.windows_vm.object.metadata.name}}</strong></td>
+          <td>{{resource.windows_vm.object.spec.network.hostName}}</td>
+          <td>{{resource.windows_vm.object.spec.network.domainName}}</td>
+          <td><span class="label label-success">Ready</span></td>
+          <td><span class="label"> {{resource.windows_vm.object.spec.powerState}} </span></td>
+          <td>{{resource.windows_vm.object.status.zone}}</td>
+          <td>{{resource.windows_vm.object.status.network.primaryIP4}}</td>
+          <td>%{if input.expose-ssh == true}${resource.loadbalancer[*].object.status.loadBalancer.ingress[0].ip[0]}%{else}-%{endif}</td>
+          <td><span class="label label-info"> {{resource.windows_vm.object.spec.className}} </span></td>
+        </tr>
+      </table>
+
+      #### SSH
+
+      %{if input.expose-ssh == true}
+          username@${resource.loadbalancer[*].object.status.loadBalancer.ingress[0].ip[0]}
+      %{else}
+          username@{{resource.windows_vm.object.status.network.primaryIP4}}
+      %{endif}
+
+      > **Disclaimer**: IP address may still be populating, if it's blank please come back in a minute.
+variables:
+  hostname: ${substring(to_lower(split(env.requestedBy, '.')[0] + '-' + env.shortDeploymentId), 0, 14)}
+  user: ${split(env.requestedBy, '@')[0]}
+  nameserver01: 172.16.10.4
+  nameserver02: 172.16.10.5
+  domain: sfo.rainpole.io
+  searchdomain: sfo.rainpole.io
+  svc-account: svc-vsphere-ad
+  ms-product-key: xxxxx-xxxxx-xxxxx-xxxxx-xxxxx
+  storage-policy: vsan-default-storage-policy
+inputs:
+  namespace-name:
+    type: string
+    title: Namespace
+    description: |
+      <h4>Namespace</h4> <p>Provide existing namespace name which is used as deployment target</p>
+    $data: /data/namespaces?projectId={{project}}
+  vm-class:
+    type: string
+    title: Virtual Machine Size
+    description: |
+      <h4>Select a Virtual Machine Size</h4>
+      <p>
+      <table class="table table-vertical table-compact">
+        <tr>
+          <th class="left">Size Name</th>
+          <th class="left">Value</th>
+        </tr>
+        <tr>
+          <td class="left"><small>Extra Small<br>(2 vCPUs - 2 GiB MEM)</small></td>
+          <td class="left"><span class="label label-info">best-effort-xsmall</label></td>
+        </tr>
+        <tr>
+          <td class="left"><small>Small<br>(2 vCPUs - 4 GiB MEM)</small></td>
+          <td class="left"><span class="label label-info">best-effort-small</label></td>
+        </tr>
+        <tr>
+          <td class="left"><small>Medium<br>(2 vCPUs - 4 GiB MEM)</small></td>
+          <td class="left"><span class="label label-info">best-effort-medium</label></td>
+        </tr>
+        <tr>
+          <td class="left"><small>Large<br>(2 vCPUs - 2 GiB MEM)</small></td>
+          <td class="left"><span class="label label-info">best-effort-large</label></td>
+        </tr>
+      </table>
+      </p>
+    $data: /data/virtualmachineclasses?namespace={{namespace-name}}
+    default: best-effort-xsmall
+  vm-image:
+    type: string
+    title: Virtual Machine Image
+    description: Select a Virtual Machine Image
+    oneOf:
+      - title: Windows Server 2022
+        const: vmi-bd364bbcfb98066a1
+    default: vmi-bd364bbcfb98066a1
+  expose-ssh:
+    type: boolean
+    title: Assign public ip
+resources:
+  namespace:
+    type: CCI.Supervisor.Namespace
+    properties:
+      name: ${input.namespace-name}
+      existing: true
+  windows_vm:
+    type: CCI.Supervisor.Resource
+    dependsOn:
+      - secret
+      - loadbalancer
+    properties:
+      context: ${resource.namespace.id}
+      wait:
+        conditions:
+          - type: VirtualMachineCreated
+            status: "True"
+      manifest:
+        apiVersion: vmoperator.vmware.com/v1alpha3
+        kind: VirtualMachine
+        metadata:
+          name: vm-${variable.hostname}
+          namespace: ${input.namespace-name}
+          labels:
+            vm-selector: vm-${variable.hostname}
+        spec:
+          className: ${input.vm-class}
+          # Friendly image name: tpl-win2022
+          imageName: vmi-b1521cfb7ab518320
+          storageClass: ${variable.storage-policy}
+          powerState: PoweredOn
+          network:
+            hostName: ${variable.hostname}
+            domainName: ${variable.domain}
+            nameservers:
+              - ${variable.nameserver01}
+              - ${variable.nameserver02}
+            searchDomains:
+              - ${variable.searchdomain}
+          bootstrap:
+            sysprep:
+              sysprep:
+                guiUnattended:
+                  password:
+                    name: vm-${variable.hostname}-bootstrap-secret
+                    key: password
+                userData:
+                  fullName: Kim Johansson
+                  orgName: VMware
+                  productID:
+                    name: vm-${variable.hostname}-bootstrap-secret
+                    key: productID
+                identification:
+                  joinDomain: ${variable.domain}
+                  domainAdmin: ${variable.svc-account}
+                  domainAdminPassword:
+                    name: vm-${variable.hostname}-bootstrap-secret
+                    key: domainAdminPassword
+  loadbalancer:
+    type: CCI.Supervisor.Resource
+    properties:
+      count: ${input.expose-ssh == true ? 1:0}
+      context: ${resource.namespace.id}
+      manifest:
+        apiVersion: vmoperator.vmware.com/v1alpha3
+        kind: VirtualMachineService
+        metadata:
+          name: vm-lb-${variable.hostname}
+          namespace: ${input.namespace-name}
+        spec:
+          selector:
+            vm-lb-selector: vm-${variable.hostname}
+          type: LoadBalancer
+          ports:
+            - name: rdp
+              port: 3389
+              protocol: TCP
+              targetPort: 3389
+  secret:
+    type: CCI.Supervisor.Resource
+    properties:
+      context: ${resource.namespace.id}
+      manifest:
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: vm-${variable.hostname}-bootstrap-secret
+          namespace: ${input.namespace-name}
+          labels:
+            vm-selector: vm-${variable.hostname}
+        stringData:
+          productID: ${variable.ms-product-key}
+          password: VMw@re1!
+          domainAdminPassword: ${secret.ad-join-password}

@@ -1,0 +1,86 @@
+# This blueprint is not meant to be an optimal production blueprint, but rather be a MVP/POC blueprint to showcase some of the capabilities in VCF Automation. To make it work there are some things that can not currently (9.0.2) be fetched dynamically that you need to input.
+# most of these values are under variables: , but you also need to edit what k8s releases you want to offer from the content catalogue.
+formatVersion: 2
+variables:
+  # these variables need to be updated, otherwise this blueprint will fail to deploy.
+  datastore-policy: vsan-default-storage-policy #if you struggle to find your policy, just go to Build & Deploy and start deploying a Kubernetes cluster, you will find it in the manifest to the right.
+  content-library: cl-d48e225857498db03 #navigate to Build & Deploy -> Virtual Machine Images -> select the three dots in front of Kubernetes Service Content Library, and find the cl- id.
+inputs:
+  namespace-name:
+    type: string
+    title: Namespace
+    description: Provide existing namespace name which is used as deployment target
+    $data: /data/namespaces?projectId={{project}}
+  cluster-name:
+    type: string
+    title: Kubernetes Cluster-Name
+  kubernetes-version:
+    type: string
+    enum:
+      # change this to the k8s releases you want to offer and that are available in your catalogue.
+      - v1.32.7---vmware.3-fips-vkr.1
+      - v1.31.7---vmware.1-fips-vkr.2
+    title: Kubernetes Version
+    description: Kubernetes Version
+  controlPlaneCount:
+    type: integer
+    title: VKS ControlPlane Node count
+    description: Control plane node count
+    default: 1
+    enum:
+      - 1
+      - 3
+  WorkloadNodeCount:
+    type: integer
+    title: VKS Workload Node count
+    description: Workload node count
+    default: 1
+    enum:
+      - 1
+      - 3
+resources:
+  CCI_Supervisor_Namespace_1:
+    type: CCI.Supervisor.Namespace
+    properties:
+      name: ${input.namespace-name}
+      existing: true
+  Kubernetes_Cluster_1:
+    type: CCI.Supervisor.Resource
+    properties:
+      context: ${resource.CCI_Supervisor_Namespace_1.id}
+      manifest:
+        apiVersion: cluster.x-k8s.io/v1beta1
+        kind: Cluster
+        metadata:
+          name: ${input.cluster-name}
+          namespace: ${resource.CCI_Supervisor_Namespace_1.name}
+        spec:
+          clusterNetwork:
+            pods:
+              cidrBlocks:
+                - 192.168.156.0/20
+            services:
+              cidrBlocks:
+                - 10.96.0.0/12
+            serviceDomain: cluster.local
+          topology:
+            class: builtin-generic-v3.3.0
+            version: ${input.kubernetes-version}
+            variables:
+              - name: vmClass
+                value: best-effort-xsmall
+              - name: storageClass
+                value: ${variable.datastore-policy}
+            controlPlane:
+              replicas: ${input.controlPlaneCount}
+              metadata:
+                annotations:
+                  run.tanzu.vmware.com/resolve-os-image: os-name=photon, content-library=${variable.content-library}
+            workers:
+              machineDeployments:
+                - class: node-pool
+                  name: kubernetes-cluster-9w19-np-4kd5
+                  replicas: ${input.WorkloadNodeCount}
+                  metadata:
+                    annotations:
+                      run.tanzu.vmware.com/resolve-os-image: os-name=photon, content-library=${variable.content-library}
